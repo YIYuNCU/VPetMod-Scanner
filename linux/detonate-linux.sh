@@ -175,8 +175,12 @@ else
   # 全部来自 set-canaries 种下的 steam.exe/loginusers/steamui **文件**，不需要诱饵进程。
   # 需要 JWT 内存路径时用 SPAWN_DECOY_PROC=1 显式开启（建议只在内存充足的机器上）。
   if [ "${SPAWN_DECOY_PROC:-0}" = 1 ] && [ -n "$DECOY" ] && [ -n "$JWT_TOKEN" ]; then
-    DECOY_PRE="STEAM_DECOY_TOKEN=$JWT_TOKEN WINEPREFIX='$WINEPREFIX' WINEDEBUG=- DISPLAY= '$WINE' '$DECOY' >'$OUT/decoy.out' 2>&1 & sleep 5; "
-    echo "    (诱饵进程: $DECOY，JWT 金丝雀已注入；SPAWN_DECOY_PROC=1)"
+    # 诱饵进程是外传链的硬前提：解密分析显示 plugin_8b 先枚举 steam.exe，找不到进程就整段返回
+    # （vdf 收集/CryptUnprotectData/POST 全都不会执行）。诱饵必须先就绪再引爆——wine 冷启动在
+    # 慢机上远超 5 秒，裸睡固定时长会枚举扑空。就绪标记 = [steam-decoy]（见 steamdecoy/main.go）。
+    DECOY_PRE="STEAM_DECOY_TOKEN='$JWT_TOKEN' WINEPREFIX='$WINEPREFIX' WINEDEBUG=- DISPLAY= '$WINE' '$DECOY' >'$OUT/decoy.out' 2>&1 & "
+    DECOY_PRE+="for i in \$(seq 1 45); do grep -a '\\[steam-decoy\\]' '$OUT/decoy.out' >/dev/null 2>&1 && break; sleep 1; done; "
+    echo "    (诱饵进程: $DECOY，JWT 金丝雀已注入；等待就绪标记最多 45s；SPAWN_DECOY_PROC=1)"
   else
     echo "    (仅种 steam.exe 文件诱饵，不并发拉起诱饵进程；如需 JWT 内存路径设 SPAWN_DECOY_PROC=1)"
   fi
@@ -190,7 +194,13 @@ else
   if [ -n "$PIN" ]; then
     SARGS_STR=""
     for a in "${SARGS[@]}"; do SARGS_STR+="'${a//\'/\'\\\'\'}' "; done
+    # lo 拉起来（bwrap --unshare-net 的 lo 默认 DOWN）+ 加一块 dummy 网卡并配 IP：
+    # netns 里只有 lo 时，样本的联网自检（wininet InternetGetConnectedState 一类，wine 走
+    # getifaddrs）会报"离线"→ 全部网络分支（gate 轮询/凭据外传）整段跳过——实测就卡在这。
+    # dummy0 仍是 netns 内的假网卡，没有任何出网路由，断网底线不变。
     INNER_PRE="ip link set lo up 2>/dev/null || true; "
+    INNER_PRE+="ip link add dummy0 type dummy 2>/dev/null || true; "
+    INNER_PRE+="ip addr add 10.7.0.1/24 dev dummy0 2>/dev/null || true; ip link set dummy0 up 2>/dev/null || true; "
     INNER_PRE+="python3 '$SINKHOLE' $SARGS_STR >'$OUT/sinkhole.out' 2>&1 & echo \$! >'$OUT/sinkhole-inner.pid'; sleep 1; "
     if command -v tcpdump >/dev/null; then
       INNER_PRE+="tcpdump -i any -s 0 -w '$OUT/capture.pcap' >/dev/null 2>&1 & echo \$! >'$OUT/tcpdump-inner.pid'; "

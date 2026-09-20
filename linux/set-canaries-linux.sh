@@ -34,7 +34,16 @@ vdf_token() {  # vdf_token <标签>  → echo 令牌（已登记 canaries.txt）
 
 mkdir -p "$STEAM/config" "$C/users/$USER/AppData/Local/Steam"
 
-# 1) loginusers.vdf：真实 VDF 结构，令牌编进 AccountName/PersonaName（样本会解析这两个字段）
+# ConnectCache 的 DPAPI blob（protectkey.exe 预生成传入；样本 CryptUnprotectData 能解开，
+# 明文含令牌——被读走并入外传即铁证）。多个位置共用同一 blob/令牌；被哪个文件消费由 strace 路径区分。
+BLOB="${LOCALVDF_BLOB:-01000000d08c9ddf0115d1118c7a00c04fc297eb01000000placeholder}"
+T2="${LOCALVDF_TOKEN:-}"
+if [ -z "$T2" ]; then T2=$(vdf_token steam-local-vdf); else
+  printf '%s	steam-local-vdf :: (vdf 字段值)
+' "$T2" >> "$OUT"; fi
+
+# 1) loginusers.vdf：真实 VDF 结构，令牌编进 AccountName/PersonaName（样本会解析这两个字段），
+#    并在账户块里放 ConnectCache（真实 Steam 的 ConnectCache 就在 loginusers.vdf 每账户下）。
 T1=$(vdf_token steam-loginusers-vdf)
 cat > "$STEAM/config/loginusers.vdf" <<EOF
 "users"
@@ -46,17 +55,14 @@ cat > "$STEAM/config/loginusers.vdf" <<EOF
 		"RememberPassword"	"1"
 		"MostRecent"		"1"
 		"Timestamp"		"1700000000"
+		"ConnectCache"		"$BLOB"
+		"connectcache"		"$BLOB"
 	}
 }
 EOF
-echo "[+] steam-loginusers-vdf -> $STEAM/config/loginusers.vdf  token=$T1"
+echo "[+] steam-loginusers-vdf -> $STEAM/config/loginusers.vdf  token=$T1（含 ConnectCache blob）"
 
-# 2) local.vdf 的 ConnectCache：hex 是 DPAPI blob（同一 Wine 用户保护即可解）。
-BLOB="${LOCALVDF_BLOB:-01000000d08c9ddf0115d1118c7a00c04fc297eb01000000placeholder}"
-T2="${LOCALVDF_TOKEN:-}"
-if [ -z "$T2" ]; then T2=$(vdf_token steam-local-vdf); else
-  printf '%s	steam-local-vdf :: (vdf 字段值)
-' "$T2" >> "$OUT"; fi
+# 2) local.vdf 的 ConnectCache
 cat > "$C/users/$USER/AppData/Local/Steam/local.vdf" <<EOF
 "Software"
 {
@@ -79,6 +85,39 @@ cat > "$C/users/$USER/AppData/Local/Steam/local.vdf" <<EOF
 }
 EOF
 echo "[+] steam-local-vdf -> $C/.../Local/Steam/local.vdf  token=$T2"
+
+# 2b) userdata/<accountID>/config/localconfig.vdf：plugin_8b 解析 loginusers 拿 SteamID →
+#     换算 accountID(76561197960287930-76561197960265728=22202) → 构造该路径找凭据。
+#     实测缺这个文件时凭据源全空、winhttp 根本不加载——外传分支不会发生。
+ACCOUNTID=$((76561197960287930 - 76561197960265728))
+mkdir -p "$STEAM/userdata/$ACCOUNTID/config"
+for VDF in "$STEAM/userdata/$ACCOUNTID/config/localconfig.vdf" "$STEAM/config/localconfig.vdf"; do
+  cat > "$VDF" <<EOF
+"UserLocalConfigStore"
+{
+	"Software"
+	{
+		"Valve"
+		{
+			"Steam"
+			{
+				"AutoLoginUser"		"canary_$T2"
+				"RememberPassword"	"1"
+				"ConnectCache"		"$BLOB"
+				"connectcache"		"$BLOB"
+			}
+		}
+	}
+}
+EOF
+  echo "[+] localconfig.vdf -> $VDF（ConnectCache blob）"
+done
+
+# 2c) 预建样本自身的日志目录：plugin_8b 写 %LOCALAPPDATA%\..\LocalLow\guigugame\guigubahuang\px_mod.log，
+#     CreateFileW(OPEN_ALWAYS) 不建父目录——缺目录=STATUS_OBJECT_PATH_NOT_FOUND，样本诊断日志哑巴。
+#     建好目录后样本会把自己的运行结论（RPM 失败/凭据收集结果）写进日志，是最便宜的行为证据。
+mkdir -p "$C/users/$USER/AppData/LocalLow/guigugame/guigubahuang"
+echo "[+] 样本日志目录已预建（LocalLow/guigugame/guigubahuang，px_mod.log 可落地）"
 
 # 3) steam.exe 文件诱饵：载荷会先 stat "Steam 安装目录/steam.exe" 判断 Steam 是否安装
 #    （实测 ENOENT 时凭据提取提前放弃、连 loginusers.vdf 内容都不读）。种上 decoy 本体。

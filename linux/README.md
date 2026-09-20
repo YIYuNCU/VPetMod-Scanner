@@ -71,6 +71,7 @@ python3 analyze-linux.py --run run1 \
 
 ## 已知限制（诚实说明）
 - **Wine ≠ 完整 Windows**：依赖特定 Win32 API / 需要 VPet 进程环境（检测父进程、窗口）的载荷可能不完全触发。`report.md` 的"未观察到 ≠ 不存在"提示即为此。
+- **跨进程读内存（ReadProcessMemory）在 Wine+bwrap 下不可靠——凭证上传 POST 无法在本沙箱引爆**（2026-09-20 实测坐实）：PxBridge 载荷的窃密链靠 `OpenProcess(QUERY|VM_READ)` + `ReadProcessMemory` 从 `steam.exe` 内存里捞 JWT。真引爆 relay 日志显示载荷**能找到诱饵进程、OpenProcess 成功、VirtualQueryEx 正常枚举**，但**每一次 `ReadProcessMemory` 都返回 0（失败）**→JWT 猎杀空手→载荷直接跳过 `CryptUnprotectData`/WinHttp 外传、整段返回。用良性复现器 `src/memprobe`（复刻同一 `OpenProcess→VirtualQueryEx→ReadProcessMemory` 序列、只读我方诱饵）能 **100% 复现同款全败**（VQ 全成、RPM 全败 `gle=0`），证明是 **Wine/wineserver 跨进程内存代劳的环境保真度问题，不是样本主动放弃**。**要实捕获凭证上传 POST 需真 Windows 沙箱**（RPM 正常）——本测试机无 KVM/无嵌套虚拟化/~900MB 内存跑不了 Windows VM，属基础设施变更。**但产品判定不受影响**：静态解密链 + 已观测到的动态行为（SeDebugPrivilege、枚举 steam.exe、OpenProcess、RPM×N、VDF 消费、`steam.cfg`/SteamUI 篡改）已足够 `malicious`；缺的只是 POST 报文本身这一件取证物。
+- **C2 抓取脚手架已就绪、随 RPM 修复即生效**：`detonate-linux.sh --pin-c2 <域名>` 会把 C2 域名钉到沙箱内 sinkhole（`/etc/hosts`→127.0.0.1，trap 恢复）并**现生成证书终结 TLS、临时装入系统信任库**，解密后的明文 POST 落盘（`https-mitm`）；配 `dummy0` 假网卡骗过联网自检，全程 `--unshare-net` 断网（**绝不真连 C2**）。TLS-MITM 全链自检 PASS（受信→明文+`CANARY_EXFIL`；不受信→退回仅记录 ClientHello/SNI）。诱饵前提也已补齐：`src/steamdecoy`（假 steam.exe 铺金丝雀 JWT，`SPAWN_DECOY_PROC=1` 开启）、`src/protectkey-c`（**C/MSVC 版** DPAPI blob——Go 版因 wine crypt32 抛异常时无 SEH 帧必崩）、`set-canaries-linux.sh` 补种 `localconfig.vdf` 与预建载荷日志目录 `LocalLow/guigugame/guigubahuang`。**这些在真 Windows 主机上即可直接抓到解密后的凭证上传 POST。**
 - **harness 触发方式**：目前按 boot 导出序号 `#1` 无参调用来复现 .NET 桩的动作。多数 boot 从自身 overlay 读配置、不需入参；若某样本的 boot 需要桩传参才动，harness 可能触发不全——此时改用真 Windows 主机加载托管桩复核。
-- TLS 只取 SNI（域名）；要 HTTPS 明文用 mitmproxy（见 `../dynamic/README.md`）。
 - 结论应结合静态扫描（`vpetscan`）一起看：静态负责上架拦截，动态负责定性。

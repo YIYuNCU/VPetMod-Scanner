@@ -36,7 +36,7 @@ func main() {
 			heap = append(heap, b)
 		}
 	}
-	fmt.Printf("[steam-decoy] 活着，JWT 诱饵 %d 形态 x64 已铺内存, token=%s\n", len(forms), tok)
+	fmt.Printf("[steam-decoy] pid=%d 活着，JWT 诱饵 %d 形态 x64 已铺内存, token=%s\n", os.Getpid(), len(forms), tok)
 	// 周期触碰防优化，也向 strace 证明诱饵一直存活
 	for i := 0; ; i++ {
 		n := 0
