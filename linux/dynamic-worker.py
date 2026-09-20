@@ -121,8 +121,12 @@ def process(a, job):
         print("[worker] 引爆:", " ".join(det))
         env = dict(os.environ)
         if a.decoy_proc:
-            # 解密分析证实：plugin_8b 先枚举 steam.exe 进程，找不到就整段返回——vdf 凭据收集、
-            # CryptUnprotectData、外传 POST 全不执行。诱饵进程因此是外传触发的硬前提，默认开。
+            # 诱饵进程喂 ReadProcessMemory 取 JWT 这条路。**2026-09-20 实测坐实：Wine+bwrap 下
+            # 跨进程 ReadProcessMemory 必失败**（良性复现器 src/memprobe 100% 复现：OpenProcess/
+            # VirtualQueryEx 成功、RPM 全返回 0）——载荷猎不到 JWT 就跳过外传。故此路在 Wine 下
+            # 永远走不通，默认**关**（省一个 wine 实例，避开低内存机 dual-wine 堆损坏）。
+            # 仅在真 Windows 沙箱（RPM 正常）上用 --decoy-proc 开启，届时可抓到凭证上传 POST。
+            # 文件类金丝雀（loginusers/localconfig/steam.cfg 篡改）不依赖诱饵进程，照常捕获。
             env["SPAWN_DECOY_PROC"] = "1"
         d = subprocess.run(det, capture_output=True, text=True, timeout=a.seconds + 300, env=env)
         # detonate 走到第 5 步必写 files-after.txt；没有它说明引爆脚本早退（磁盘满/Wine 崩等），
@@ -163,8 +167,10 @@ def main():
     ap.add_argument("--mock", action="store_true", help="用良性诱饵代替真引爆，验证自动化管线")
     ap.add_argument("--pin-c2", default="bvdpp.top,www.bvdpp.top",
                     help="钉住的 C2 域名，逗号分隔（hosts→127.0.0.1 + TLS MITM 抓外传 POST；空串关闭）")
-    ap.add_argument("--no-decoy-proc", dest="decoy_proc", action="store_false", default=True,
-                    help="不拉起 steam.exe 诱饵进程（低内存机器兜底；代价是凭据外传链不会触发）")
+    ap.add_argument("--decoy-proc", dest="decoy_proc", action="store_true", default=False,
+                    help="拉起 steam.exe 诱饵进程喂 JWT 内存猎杀路径。默认关：Wine 下跨进程 "
+                         "ReadProcessMemory 必失败（见 README 已知限制），此路走不通、还占一个 wine 实例。"
+                         "仅在真 Windows 沙箱上开启以抓凭证上传 POST。")
     ap.add_argument("--once", action="store_true", help="只处理一个任务后退出（自检用）")
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--work-dir", default="/var/tmp/vpetdyn",
