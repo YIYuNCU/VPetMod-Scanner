@@ -119,7 +119,12 @@ def process(a, job):
             det += ["--boot", boot]
 
         print("[worker] 引爆:", " ".join(det))
-        d = subprocess.run(det, capture_output=True, text=True, timeout=a.seconds + 300)
+        env = dict(os.environ)
+        if a.decoy_proc:
+            # 解密分析证实：plugin_8b 先枚举 steam.exe 进程，找不到就整段返回——vdf 凭据收集、
+            # CryptUnprotectData、外传 POST 全不执行。诱饵进程因此是外传触发的硬前提，默认开。
+            env["SPAWN_DECOY_PROC"] = "1"
+        d = subprocess.run(det, capture_output=True, text=True, timeout=a.seconds + 300, env=env)
         # detonate 走到第 5 步必写 files-after.txt；没有它说明引爆脚本早退（磁盘满/Wine 崩等），
         # 这属于基础设施故障，必须回报 error——绝不能让 analyze 贴一份"没观察到任何行为"的空报告冒充结论。
         if not os.path.isfile(os.path.join(run, "files-after.txt")):
@@ -158,6 +163,8 @@ def main():
     ap.add_argument("--mock", action="store_true", help="用良性诱饵代替真引爆，验证自动化管线")
     ap.add_argument("--pin-c2", default="bvdpp.top,www.bvdpp.top",
                     help="钉住的 C2 域名，逗号分隔（hosts→127.0.0.1 + TLS MITM 抓外传 POST；空串关闭）")
+    ap.add_argument("--no-decoy-proc", dest="decoy_proc", action="store_false", default=True,
+                    help="不拉起 steam.exe 诱饵进程（低内存机器兜底；代价是凭据外传链不会触发）")
     ap.add_argument("--once", action="store_true", help="只处理一个任务后退出（自检用）")
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--work-dir", default="/var/tmp/vpetdyn",
