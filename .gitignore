@@ -1,0 +1,21 @@
+*.exe
+/dist/
+/data/
+/deploy/vpetscan-linux-amd64
+
+# 动态分析运行产物（含样本行为数据，勿入库）
+/dynamic/run*/
+/dynamic/canary-backup/
+/dynamic/canaries.txt*
+/dynamic/sink.jsonl
+/dynamic/*.pcapng
+/dynamic/*.etl
+/dynamic/*.pml
+
+# Linux 动态分析：交叉编译产物与运行输出
+/linux/harness.exe
+/linux/mocktarget.exe
+/linux/run*/
+/linux/mockrun/
+
+/native

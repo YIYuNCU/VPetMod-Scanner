@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VPet MOD 审核</title>
+<style>
+  :root{
+    --bg:#0f1216; --panel:#171b22; --panel2:#1e242d; --line:#2a323d;
+    --fg:#e6eaf0; --muted:#8b97a7; --accent:#4c8dff;
+    --clean:#3fb950; --susp:#d29922; --mal:#f85149;
+  }
+  @media (prefers-color-scheme:light){
+    :root{--bg:#f5f7fa;--panel:#fff;--panel2:#f0f3f7;--line:#dfe4ea;--fg:#1b2530;--muted:#5a6675;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif}
+  header{display:flex;gap:12px;align-items:center;padding:12px 16px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .sp{flex:1}
+  input,select,button{font:inherit;color:var(--fg);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px}
+  button{cursor:pointer}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button:disabled{opacity:.5;cursor:default}
+  main{display:grid;grid-template-columns:minmax(340px,1fr) minmax(360px,1.3fr);gap:16px;padding:16px;align-items:start}
+  @media (max-width:820px){main{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .card h2{font-size:13px;margin:0;padding:10px 14px;border-bottom:1px solid var(--line);color:var(--muted);font-weight:600;display:flex;gap:8px;align-items:center}
+  .rows{max-height:70vh;overflow:auto}
+  .row{padding:10px 14px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:10px;align-items:center}
+  .row:hover{background:var(--panel2)}
+  .row.sel{background:var(--panel2);box-shadow:inset 3px 0 var(--accent)}
+  .row .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .sub{color:var(--muted);font-size:12px}
+  .badge{font-size:11px;padding:2px 8px;border-radius:999px;white-space:nowrap;border:1px solid transparent}
+  .b-clean{color:var(--clean);border-color:var(--clean)}
+  .b-suspicious{color:var(--susp);border-color:var(--susp)}
+  .b-malicious{color:#fff;background:var(--mal);border-color:var(--mal)}
+  .b-queued,.b-running{color:var(--accent);border-color:var(--accent)}
+  .b-error{color:var(--mal);border-color:var(--mal)}
+  .b-approved{color:var(--clean);border-color:var(--clean)}
+  .b-rejected{color:var(--mal);border-color:var(--mal)}
+  .b-pending{color:var(--muted);border-color:var(--line)}
+  #detail{padding:14px}
+  #detail .k{color:var(--muted)}
+  .f{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:8px 0;background:var(--panel2)}
+  .f .t{font-weight:600}
+  .f.sev-critical{border-left:3px solid var(--mal)}
+  .f.sev-high{border-left:3px solid var(--mal)}
+  .f.sev-medium{border-left:3px solid var(--susp)}
+  .f.sev-low{border-left:3px solid var(--muted)}
+  .path{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--muted);word-break:break-all}
+  .ev{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--muted)}
+  .actions{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap}
+  .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);padding:10px 16px;border-radius:10px;opacity:0;transition:opacity .2s}
+  .toast.show{opacity:1}
+  .drop{border:2px dashed var(--line);border-radius:10px;padding:10px;text-align:center;color:var(--muted);font-size:12px}
+  .drop.over{border-color:var(--accent);color:var(--accent)}
+  .empty{padding:24px;text-align:center;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>🛡️ VPet MOD 审核</h1>
+  <span class="sp"></span>
+  <input id="token" type="password" placeholder="访问令牌 (Bearer Token)" style="width:220px">
+  <select id="fReview"><option value="">全部审核状态</option><option value="pending">待审核</option><option value="approved">已通过</option><option value="rejected">已驳回</option></select>
+  <select id="fVerdict"><option value="">全部结论</option><option value="malicious">恶意</option><option value="suspicious">可疑</option><option value="clean">干净</option></select>
+  <label class="drop" id="drop">拖拽或点击上传<input id="file" type="file" hidden></label>
+  <button id="refresh">刷新</button>
+</header>
+<main>
+  <div class="card">
+    <h2>任务队列 <span id="count" class="sub"></span>
+      <button onclick="clearAll()" style="float:right;color:var(--mal);font-size:12px">清空全部</button>
+    </h2>
+    <div class="rows" id="list"><div class="empty">加载中…</div></div>
+  </div>
+  <div class="card">
+    <h2>详情</h2>
+    <div id="detail"><div class="empty">从左侧选择一个任务</div></div>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+const $=s=>document.querySelector(s);
+const TK=()=>$('#token').value.trim();
+if(localStorage.vpetscanTok) $('#token').value=localStorage.vpetscanTok;
+$('#token').addEventListener('change',()=>{localStorage.vpetscanTok=TK();load();});
+let cur=null, tasks=[], curTask=null;
+
+function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800);}
+function hdr(){const h={};if(TK())h.Authorization='Bearer '+TK();return h;}
+async function api(path,opts={}){
+  opts.headers=Object.assign(hdr(),opts.headers||{});
+  const r=await fetch(path,opts);
+  if(r.status===401){toast('令牌无效或缺失');throw new Error('401');}
+  const t=await r.text();
+  return t?JSON.parse(t):{};
+}
+function esc(s){return (s??'').toString().replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+const vLabel={malicious:'恶意',suspicious:'可疑',clean:'干净'};
+const sLabel={queued:'排队中',running:'扫描中',done:'完成',error:'出错'};
+const rLabel={pending:'待审核',approved:'已通过',rejected:'已驳回'};
+
+function badge(cls,txt){return `<span class="badge b-${cls}">${esc(txt)}</span>`;}
+function verdictBadge(t){
+  if(t.state&&t.state!=='done') return badge(t.state,sLabel[t.state]||t.state);
+  const v=(t.report&&t.report.verdict)||t.verdict||'';
+  return badge(v,vLabel[v]||v);
+}
+
+async function load(){
+  const q=new URLSearchParams();
+  if($('#fReview').value)q.set('review',$('#fReview').value);
+  if($('#fVerdict').value)q.set('verdict',$('#fVerdict').value);
+  q.set('limit','200');
+  try{
+    const d=await api('/api/v1/tasks?'+q);
+    tasks=d.tasks||[];
+    $('#count').textContent=`(${d.total})`;
+    render();
+  }catch(e){$('#list').innerHTML='<div class="empty">加载失败：'+esc(e.message)+'</div>';}
+}
+function render(){
+  if(!tasks.length){$('#list').innerHTML='<div class="empty">暂无任务</div>';return;}
+  $('#list').innerHTML=tasks.map(t=>`
+    <div class="row ${cur===t.id?'sel':''}" data-id="${t.id}">
+      <div class="name">
+        <div>${esc(t.filename)}</div>
+        <div class="sub">${new Date(t.created_at).toLocaleString()} · ${badge(t.review,rLabel[t.review])}${t.has_dynamic?' · 🌐':(t.dynamic_state==='pending'||t.dynamic_state==='running'?' · ⏳':'')}</div>
+      </div>
+      ${verdictBadge(t)}
+    </div>`).join('');
+  document.querySelectorAll('.row').forEach(el=>el.onclick=()=>open(el.dataset.id));
+}
+
+async function open(id){
+  cur=id;render();
+  $('#detail').innerHTML='<div class="empty">加载中…</div>';
+  let t;try{t=await api('/api/v1/tasks/'+id);}catch(e){$('#detail').innerHTML='<div class="empty">'+esc(e.message)+'</div>';return;}
+  curTask=t;
+  let h=`<div><b>${esc(t.filename)}</b> ${verdictBadge(t)} ${badge(t.review,rLabel[t.review])}</div>
+    <div class="path">sha256: ${esc(t.sha256)}</div>
+    <div class="sub">大小 ${(t.size/1024).toFixed(1)} KB · 提交 ${new Date(t.created_at).toLocaleString()}${t.submitter?' · '+esc(t.submitter):''}</div>`;
+  if(t.state==='error') h+=`<div class="f sev-high"><div class="t">扫描出错</div><div class="ev">${esc(t.error)}</div></div>`;
+  const rep=t.report;
+  if(rep){
+    h+=`<div class="sub" style="margin-top:8px">总分 ${rep.score} · 扫描文件 ${rep.scanned_files} · PE ${rep.pe_files.length}</div>`;
+    const groups=(rep.mods||[]).filter(m=>m.findings&&m.findings.length).concat(rep.loose_findings&&rep.loose_findings.length?[{root:'（未归属）',findings:rep.loose_findings,verdict:'',name:'',author:''}]:[]);
+    if(!groups.length) h+=`<div class="f sev-low"><div class="t">未发现可疑特征</div></div>`;
+    for(const m of groups){
+      h+=`<div style="margin-top:10px"><b>${esc(m.name||m.root.split('/').pop())}</b> ${m.verdict?verdictBadge({state:'done',report:{verdict:m.verdict}}):''} <span class="sub">${esc(m.author||'')}</span></div>`;
+      for(const f of m.findings){
+        h+=`<div class="f sev-${f.severity}"><div class="t">${esc(f.title)} <span class="sub">[${esc(f.rule)}]</span></div>
+          <div class="path">${esc(f.path)}</div>
+          ${f.detail?`<div class="ev">${esc(f.detail)}</div>`:''}
+          ${f.evidence?Object.entries(f.evidence).map(([k,v])=>`<div class="ev">${esc(k)}=${esc(v)}</div>`).join(''):''}
+        </div>`;
+      }
+    }
+    (rep.warnings||[]).forEach(w=>h+=`<div class="ev">⚠ ${esc(w)}</div>`);
+    h+=renderNet(rep.network_indicators);
+  }
+  h+=renderDynamic(t.dynamic,t.dynamic_state,t.dynamic_error);
+  if(t.review!=='pending') h+=`<div class="sub" style="margin-top:8px">审核：${rLabel[t.review]} by ${esc(t.reviewer||'')} · ${t.reviewed_at?new Date(t.reviewed_at).toLocaleString():''}${t.review_note?'<br>备注: '+esc(t.review_note):''}</div>`;
+  h+=`<div class="actions" style="border-bottom:none;padding-bottom:0">
+    <button onclick="dlReport()">⬇ 取证报告(.md)</button>
+    <button onclick="dlJson()">⬇ JSON</button>
+    <button onclick="dlSample()" style="color:var(--mal)">⬇ 原始样本</button>
+    <span class="sp" style="flex:1"></span>
+    <button onclick="rescan()">↻ 重新扫描</button>
+    <button onclick="delTask()" style="color:var(--mal)">🗑 删除</button>
+  </div>`;
+  h+=`<div class="actions">
+    <input id="rev" placeholder="审核员" style="width:110px" value="${esc(localStorage.vpetscanRev||'')}">
+    <input id="note" placeholder="备注（可选）" style="flex:1;min-width:120px">
+    <button class="primary" onclick="review('approved')">通过</button>
+    <button onclick="review('rejected')" style="color:var(--mal)">驳回</button>
+  </div>`;
+  $('#detail').innerHTML=h;
+}
+
+function renderNet(nis){
+  if(!nis||!nis.length) return '';
+  const kLbl={url:'URL',ip:'IP',secret:'内嵌密钥'};
+  let h=`<div class="f sev-medium" style="margin-top:12px"><div class="t">🔗 外联地址（静态提取）</div>
+    <div class="ev">从插件明文中提取到以下外部地址/机密。联网不一定恶意，但需确认用途（尤其把对话/数据转发到第三方的插件）。</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px"><tr style="color:var(--muted)"><td>类型</td><td>值</td></tr>`;
+  nis.forEach(n=>h+=`<tr><td>${esc(kLbl[n.kind]||n.kind)}</td><td class="path">${esc(n.value)}</td></tr>`);
+  h+=`</table></div>`;
+  return h;
+}
+
+function renderDynamic(d,state,err){
+  if(!d){
+    const sLbl={pending:'⏳ 已自动排队，等待动态分析…',running:'⏳ 动态分析进行中（隔离环境引爆样本）…',error:'⚠ 动态分析失败'};
+    if(state && sLbl[state]){
+      return `<div class="f ${state==='error'?'sev-high':'sev-medium'}" style="margin-top:12px"><div class="t">🌐 外联地址 / 动态分析</div>
+        <div class="ev">${sLbl[state]}${state==='error'&&err?'：'+esc(err):''}</div>
+        <div class="ev">完成后本页会自动出现外链地址与请求包（每 3 秒刷新）。</div></div>`;
+    }
+    return `<div class="f sev-low" style="margin-top:12px"><div class="t">🌐 外联地址 / 动态分析</div>
+      <div class="ev">该样本未触发自动动态分析（通常只对判定为恶意/可疑的样本自动引爆）。</div></div>`;
+  }
+  let h=`<div style="margin-top:14px"><b>🌐 外联地址 / 动态分析</b> <span class="sub">来源 ${esc(d.source||'?')}${d.verdict?' · '+esc(d.verdict):''}${d.submitted_at?' · '+new Date(d.submitted_at).toLocaleString():''}</span></div>`;
+  // 金丝雀 / 外发凭证：取证板块，正负都显式记录，绝不静默省略。
+  const cex=d.canary_exfil||[], cpl=d.canaries_planted||[];
+  if(cex.length){
+    h+=`<div class="f sev-critical"><div class="t">凭证外发（金丝雀命中，铁证）</div>`;
+    cex.forEach(x=>h+=`<div class="ev">${esc(x)}</div>`);
+    if(cpl.length)h+=`<div class="sub" style="margin-top:4px">已种植 ${d.canary_count||cpl.length} 个诱饵：${esc(cpl.join('、'))}</div>`;
+    h+=`</div>`;
+  } else if(d.exfil_checked){
+    h+=`<div class="f sev-low"><div class="t">金丝雀外发监控（本次未命中）</div>
+      <div class="ev">已种植 ${d.canary_count||cpl.length} 个金丝雀诱饵并全程监控 sendto / sinkhole / pcap，窗口内未见任何令牌外发（未观察到≠不存在：可能延时/条件触发或加密后外发）。</div>`;
+    if(cpl.length)h+=`<div class="sub" style="margin-top:4px">诱饵清单：${esc(cpl.join('、'))}</div>`;
+    h+=`</div>`;
+  }
+  if((d.credential_access||[]).length){
+    h+=`<div class="f sev-high"><div class="t">读取凭证文件</div>`;
+    d.credential_access.slice(0,20).forEach(x=>h+=`<div class="path">${esc(x)}</div>`); h+=`</div>`;
+  }
+  const eps=d.endpoints||[];
+  if(eps.length){
+    h+=`<div class="f sev-medium"><div class="t">外联地址（${eps.length}）</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <tr style="color:var(--muted)"><td>目标</td><td>协议</td><td>来源</td><td>结果</td></tr>`;
+    eps.forEach(e=>h+=`<tr><td class="path">${esc(e.target)}</td><td>${esc(e.proto||'')}</td><td>${esc(e.source||'')}</td><td>${esc(e.result||'')}</td></tr>`);
+    h+=`</table></div>`;
+  }
+  const rq=d.requests||[];
+  if(rq.length){
+    h+=`<div class="f sev-medium"><div class="t">尝试发送的请求包（${rq.length}）</div>`;
+    rq.slice(0,20).forEach((r,i)=>{
+      h+=`<div style="margin-top:6px"><b>#${i+1}</b> ${esc(r.proto||'')} → ${esc(r.peer||'')}:${esc(String(r.dport||''))} ${r.bytes?('('+r.bytes+'B)'):''}`;
+      if(r.host)h+=` Host=${esc(r.host)}`;
+      if(r.sni)h+=` SNI=${esc(r.sni)}`;
+      if(r.request)h+=`<div class="path">${esc(r.request)}</div>`;
+      if(r.hex)h+=`<pre class="ev" style="white-space:pre;overflow:auto;max-height:180px">${esc(r.hex)}</pre>`;
+      h+=`</div>`;
+    });
+    h+=`</div>`;
+  }
+  if((d.dropped_pe||[]).length){
+    h+=`<div class="f sev-high"><div class="t">运行期落地的 PE（疑似二阶段载荷）</div>`;
+    d.dropped_pe.forEach(x=>h+=`<div class="path">${esc(x)}</div>`); h+=`</div>`;
+  }
+  if((d.steamui_tamper||[]).length){
+    h+=`<div class="f sev-critical"><div class="t">篡改 Steam 客户端（SteamUI 改写 / 抑制自更新落地）</div>`;
+    d.steamui_tamper.forEach(x=>h+=`<div class="path">${esc(x)}</div>`); h+=`</div>`;
+  }
+  if(d.note)h+=`<div class="ev">${esc(d.note)}</div>`;
+  return h;
+}
+
+// ---- 取证下载 ----
+function saveBlob(name,blob){
+  const u=URL.createObjectURL(blob);const a=document.createElement('a');
+  a.href=u;a.download=name;document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(u);a.remove();},1000);
+}
+function dlJson(){
+  if(!curTask)return;
+  saveBlob(curTask.id+'.json',new Blob([JSON.stringify(curTask,null,2)],{type:'application/json'}));
+}
+// 从已加载的任务对象拼一份完整的 Markdown 取证报告（静态判定 + 外链 + 动态金丝雀/外传包/凭证访问）。
+function dlReport(){
+  const t=curTask;if(!t)return;
+  const L=[];const w=s=>L.push(s==null?'':s);
+  w('# VPet MOD 取证报告');w('');
+  w('- 文件：`'+(t.filename||'')+'`');
+  w('- SHA256：`'+(t.sha256||'')+'`');
+  w('- 大小：'+((t.size||0)/1024).toFixed(1)+' KB');
+  w('- 提交：'+(t.submitter||'-')+' · '+(t.created_at?new Date(t.created_at).toLocaleString():''));
+  w('- 静态判定：**'+((t.report&&t.report.verdict)||t.state||'?')+'**'+(t.report?(' · 总分 '+t.report.score):''));
+  w('- 审核：'+(t.review||'')+(t.reviewer?(' by '+t.reviewer):'')+(t.review_note?(' · 备注：'+t.review_note):''));
+  w('- 报告生成：'+new Date().toLocaleString());w('');
+  const rep=t.report;
+  if(rep){
+    w('## 静态发现');
+    const groups=(rep.mods||[]).filter(m=>m.findings&&m.findings.length)
+      .concat(rep.loose_findings&&rep.loose_findings.length?[{root:'（未归属）',findings:rep.loose_findings}]:[]);
+    if(!groups.length)w('_未发现可疑特征。_');
+    groups.forEach(m=>{
+      w('');w('### '+(m.name||(m.root||'').split('/').pop()||m.root)+(m.verdict?(' — '+m.verdict):''));
+      m.findings.forEach(f=>{
+        w('- **['+f.rule+'] '+f.title+'**（'+f.severity+'）');
+        w('  - 路径：`'+f.path+'`');
+        if(f.detail)w('  - '+f.detail);
+        if(f.evidence)Object.entries(f.evidence).forEach(([k,v])=>w('  - '+k+'='+v));
+      });
+    });
+    (rep.warnings||[]).forEach(x=>w('- ⚠ '+x));
+    const ni=rep.network_indicators||[];
+    if(ni.length){w('');w('## 外链地址（静态提取，'+ni.length+'）');ni.forEach(n=>w('- '+(n.kind||'')+'：`'+(n.value||'')+'`'+(n.path?('  ('+n.path+')'):'')));}
+  }
+  const d=t.dynamic;
+  if(d){
+    w('');w('## 动态分析（'+(d.source||'')+' · '+(d.verdict||'')+(d.submitted_at?(' · '+new Date(d.submitted_at).toLocaleString()):'')+'）');
+    w('');w('### 金丝雀 / 凭证外发');
+    if(d.exfil_checked){
+      w('- 已种植 '+(d.canary_count||(d.canaries_planted||[]).length)+' 个金丝雀诱饵：'+((d.canaries_planted||[]).join('、')||'-'));
+      if((d.canary_exfil||[]).length){w('- **确认外发（铁证）：**');d.canary_exfil.forEach(x=>w('  - '+x));}
+      else w('- 窗口内所有监控通道（sendto/sinkhole/pcap）未见任何令牌外发（未观察到≠不存在）。');
+    } else w('- _本次未做金丝雀监控（引爆可能早退）。_');
+    if((d.credential_access||[]).length){w('');w('### 读取凭证文件');d.credential_access.forEach(x=>w('- `'+x+'`'));}
+    if((d.endpoints||[]).length){w('');w('### 外联地址');d.endpoints.forEach(e=>w('- `'+e.target+'`  '+(e.proto||'')+'  '+(e.source||'')+(e.result?('  ⚠ '+e.result):'')));}
+    if((d.requests||[]).length){
+      w('');w('### 尝试发送的请求包（取证证据）');
+      d.requests.forEach((r,i)=>{
+        w('');w('#### #'+(i+1)+' '+(r.proto||'')+' → '+(r.peer||'')+':'+(r.dport||'')+(r.bytes?('  ('+r.bytes+'B)'):'')+(r.canary?('  金丝雀='+r.canary):''));
+        if(r.host)w('- Host: '+r.host);if(r.sni)w('- SNI: '+r.sni);if(r.request)w('- 请求行: `'+r.request+'`');
+        if(r.hex){w('```');w(String(r.hex));w('```');}
+      });
+    }
+    if((d.dropped_pe||[]).length){w('');w('### 运行期落地 PE');d.dropped_pe.forEach(x=>w('- `'+x+'`'));}
+    if((d.steamui_tamper||[]).length){w('');w('### SteamUI 篡改落地');d.steamui_tamper.forEach(x=>w('- `'+x+'`'));}
+    if(d.note){w('');w('> '+d.note);}
+  } else {
+    w('');w('## 动态分析');w('_'+({pending:'已排队等待引爆',running:'引爆进行中',error:'动态分析失败：'+(t.dynamic_error||'')}[t.dynamic_state]||'未触发动态分析')+'_');
+  }
+  saveBlob((t.id||'task')+'-forensics.md',new Blob([L.join('\n')],{type:'text/markdown;charset=utf-8'}));
+}
+// 下载原始样本（活体样本！仅供隔离环境分析）。带令牌鉴权取回，落地改名 .bin 防误双击执行。
+async function dlSample(){
+  const t=curTask;if(!t)return;
+  if(!confirm('原始样本可能是活体恶意程序。下载后请只在隔离环境分析，不要在本机打开/执行。继续？'))return;
+  toast('下载样本中…');
+  try{
+    const r=await fetch('/api/v1/tasks/'+t.id+'/file',{headers:hdr()});
+    if(!r.ok){toast('下载失败：'+r.status);return;}
+    saveBlob((t.filename||t.id)+'.bin',await r.blob());
+  }catch(e){toast('下载失败：'+e.message);}
+}
+
+async function rescan(){
+  if(!cur)return;
+  toast('重新扫描中…');
+  try{
+    const d=await api('/api/v1/tasks/'+cur+'/rescan?wait=60',{method:'POST'});
+    toast('已重新扫描');
+    await load();await open(cur);
+  }catch(e){toast('重扫失败：'+e.message);}
+}
+async function delTask(){
+  if(!cur)return;
+  if(!confirm('删除该任务及其原始样本、动态结果？此操作不可撤销。'))return;
+  try{
+    await api('/api/v1/tasks/'+cur,{method:'DELETE'});
+    toast('已删除');
+    cur=null;curTask=null;$('#detail').innerHTML='<div class="empty">从左侧选择一个任务</div>';
+    await load();
+  }catch(e){toast('删除失败：'+e.message);}
+}
+async function clearAll(){
+  if(!confirm('清空全部任务与审核记录（含原始样本、动态结果、审核日志）？此操作不可撤销。'))return;
+  if(!confirm('再次确认：这会删除服务器上所有扫描任务和记录，确定继续？'))return;
+  try{
+    const d=await api('/api/v1/tasks',{method:'DELETE'});
+    toast('已清空 '+(d.deleted||0)+' 个任务');
+    cur=null;curTask=null;$('#detail').innerHTML='<div class="empty">从左侧选择一个任务</div>';
+    await load();
+  }catch(e){toast('清空失败：'+e.message);}
+}
+
+async function review(decision){
+  const reviewer=$('#rev').value.trim();
+  if(!reviewer){toast('请填写审核员');return;}
+  localStorage.vpetscanRev=reviewer;
+  try{
+    await api('/api/v1/tasks/'+cur+'/review',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({decision,reviewer,note:$('#note').value.trim()})});
+    toast(decision==='approved'?'已通过':'已驳回');
+    await load();await open(cur);
+  }catch(e){toast('操作失败：'+e.message);}
+}
+
+async function upload(file){
+  if(!file)return;
+  toast('上传中…');
+  const fd=new FormData();fd.append('file',file);
+  try{
+    const d=await api('/api/v1/scan?wait=60',{method:'POST',body:fd});
+    toast(d.dedup?'已存在相同文件的扫描结果':'扫描完成');
+    await load();if(d.task)await open(d.task.id);
+  }catch(e){toast('上传失败：'+e.message);}
+}
+
+const drop=$('#drop');
+drop.onclick=()=>$('#file').click();
+$('#file').onchange=e=>upload(e.target.files[0]);
+['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over');}));
+drop.addEventListener('drop',e=>upload(e.dataTransfer.files[0]));
+$('#refresh').onclick=load;
+$('#fReview').onchange=load;$('#fVerdict').onchange=load;
+load();
+setInterval(()=>{
+  const busy=tasks.some(t=>t.state==='queued'||t.state==='running'||t.dynamic_state==='pending'||t.dynamic_state==='running');
+  if(busy){load(); if(cur)open(cur);}
+},3000);
+</script>
+</body>
+</html>
