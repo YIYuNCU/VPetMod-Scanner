@@ -35,6 +35,8 @@ SENDTO_RE = re.compile(r'send(?:to)?\(\d+, "((?:[^"\\]|\\.)*)", \d+(?:, [^,]+)?(
 # （另一位开发者完成解密；原始样本中这些在加密节内，静态明文扫描不可见）。
 KNOWN_C2 = {
     "bvdpp.top": "已知 PxBridge C2：JWT/凭据外传(/ey/2.php /vdf/2.php) + SteamUI 注入接口(/gate.php /steamhelper*)",
+    "hhfyuxuz.top": "同族第二套 PxBridge C2（跨游戏投放包 鸭科夫假红信mod/SteamCFyinxiao.dll）："
+                    "/gate.php 远程开关 + /steamhelper* 页面引导；打下 bvdpp.top 不会让这个包失效",
 }
 # 同一样本解密字符串里的关联域名清单：无证据表明当前样本逐一通信，仅用于命中提示，不定性。
 WATCH_DOMAINS = [

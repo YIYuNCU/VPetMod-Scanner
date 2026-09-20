@@ -156,8 +156,9 @@ def main():
     ap.add_argument("--serve", default="")
     ap.add_argument("--scanner", default="")
     ap.add_argument("--mock", action="store_true", help="用良性诱饵代替真引爆，验证自动化管线")
-    ap.add_argument("--pin-c2", default="bvdpp.top,www.bvdpp.top",
-                    help="钉住的 C2 域名，逗号分隔（hosts→127.0.0.1 + TLS MITM 抓外传 POST；空串关闭）")
+    ap.add_argument("--pin-c2", default="bvdpp.top,www.bvdpp.top,hhfyuxuz.top,www.hhfyuxuz.top",
+                    help="钉住的 C2 域名，逗号分隔（hosts→127.0.0.1 + TLS MITM 抓外传 POST；空串关闭）。"
+                         "默认含同族第二套 C2 hhfyuxuz.top——打下 bvdpp.top 不会让那个包失效")
     ap.add_argument("--once", action="store_true", help="只处理一个任务后退出（自检用）")
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--work-dir", default="/var/tmp/vpetdyn",

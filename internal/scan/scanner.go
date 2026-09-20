@@ -173,6 +173,16 @@ func (w *walker) handleNamed(disp, name string, read func(max int64) []byte) boo
 			}
 		}
 		return true
+	case name == "info.ini":
+		// 非 VPet 宿主的 MOD 清单（Unity/BepInEx 风格，如 鸭科夫假红信mod 的 info.ini
+		// 带 name/displayName/publishedFileId）。家族已经在跨游戏投放，不认这类清单
+		// 就会整包降级成 loose，审核页看不到"这是什么 MOD、作者是谁"。
+		if b := read(64 << 10); b != nil {
+			if m := parseInfoIni(b); m.isMod {
+				w.mods[path.Dir(disp)] = m
+			}
+		}
+		return true
 	case name == ".px_sidecar":
 		ev := map[string]string{}
 		if b := read(64 << 10); b != nil {
@@ -231,6 +241,67 @@ func (w *walker) analyzePEBytes(disp string, data []byte) {
 	w.findings = append(w.findings, found...)
 }
 
+// resolveHelperTargets 丢掉"按名加载的原生 DLL 并不在本次扫描范围内"的 GEN-HELPER-NATIVE-EXEC。
+//
+// 为什么必须做包内解析：合法库同样会引用原生加载三件套并指名一个 DLL，完全不值得怀疑。
+// 工坊 134 个 MOD 语料实测的假阳性（打补丁前都没有，是新增该规则引入的）：
+//
+//	CSCore.dll               -> X3DAudio1_7.dll                    （Windows 系统 DLL）
+//	Microsoft.CodeAnalysis.dll -> Microsoft.DiaSymReader.Native.x86.dll（旁加载组件）
+//	System.Management.dll    -> wminet_utils.dll                   （系统 DLL）
+//
+// 家族的特征不是"按名加载原生 DLL"，而是"加载**随包一起投放**的原生 DLL"：
+// CalcBridge.dll -> SteamCFyinxiao.dll，两者同在一个 MOD 包里。
+// 所以要求目标能在本次扫描的 PE 清单里解析到，才保留这条 medium。
+func resolveHelperTargets(pes []FileInfo, fs []Finding) []Finding {
+	if len(fs) == 0 {
+		return fs
+	}
+	inPkg := make(map[string]bool, len(pes))
+	for _, p := range pes {
+		inPkg[strings.ToLower(pathBaseName(p.Path))] = true
+	}
+	out := fs[:0:0]
+	for _, f := range fs {
+		if f.Rule == "GEN-HELPER-NATIVE-EXEC" {
+			t := strings.ToLower(pathBaseName(f.Evidence["target"]))
+			if t == "" || !inPkg[t] {
+				continue
+			}
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// dedupeFindings 去掉完全相同的发现（同规则 + 同路径 + 同证据）。
+//
+// 为什么需要：同一条 IOC 可能被两条互相独立的路径各命中一次——例如 URL 形态的
+// "https://bvdpp.top/ey/2.php" 会同时被 networkFindings（解析 URL）与 knownC2InBytes
+// （原始字节找裸 host）报出来。计分按规则去重，分值不受影响，但报告里会出现两条一模一样的
+// 记录，审核页看着像重复告警。这里统一压掉，保留首次出现顺序。
+func dedupeFindings(fs []Finding) []Finding {
+	if len(fs) < 2 {
+		return fs
+	}
+	seen := make(map[string]bool, len(fs))
+	out := fs[:0:0]
+	for _, f := range fs {
+		keys := make([]string, 0, len(f.Evidence))
+		for k, v := range f.Evidence {
+			keys = append(keys, k+"="+v)
+		}
+		sort.Strings(keys) // map 顺序随机，排序后 key 才稳定
+		id := f.Rule + "|" + f.Path + "|" + strings.Join(keys, ",")
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, f)
+	}
+	return out
+}
+
 // 文本类文件的外联/密钥提取上限：配置/语言 JSON 通常几十~几百 KB，超大文本（日志）跳过。
 const textExtractMax = 8 << 20
 
@@ -260,6 +331,10 @@ func (w *walker) analyzeTextBytes(disp string, data []byte) {
 	}
 	lines := strings.Split(string(data), "\n")
 	w.findings = append(w.findings, networkFindingsX(disp, lines, false)...)
+	// 丢弃的注入脚本 / JS 片段（例如落盘的 sp.js、px_msgpoll.js）也要能定性：
+	// 与 PE 走同一套标记与裸域名取证。
+	w.findings = append(w.findings, artifactMarkerFindings(disp, data)...)
+	w.findings = append(w.findings, knownC2InBytes(disp, data)...)
 }
 
 // budget 检查文件数上限；超限置 stop 并只 warn 一次。
@@ -380,6 +455,8 @@ func (w *walker) report(target string) *Report {
 		roots = append(roots, r)
 	}
 	w.layoutFindings(roots)
+	w.findings = resolveHelperTargets(w.pes, w.findings)
+	w.findings = dedupeFindings(w.findings)
 	// 最长前缀优先，保证嵌套 MOD 归到最近的根。
 	sort.Slice(roots, func(i, j int) bool { return len(roots[i]) > len(roots[j]) })
 
@@ -401,7 +478,7 @@ func (w *walker) report(target string) *Report {
 	// 汇总静态提取的外联地址/密钥（来自 NET-* 发现），供网页「外联地址（静态）」直接展示。
 	seenNI := map[string]bool{}
 	for _, f := range w.findings {
-		if f.Rule != "NET-ENDPOINT" && f.Rule != "NET-EMBEDDED-SECRET" {
+		if f.Rule != "NET-ENDPOINT" && f.Rule != "NET-EMBEDDED-SECRET" && f.Rule != "NET-KNOWN-C2" {
 			continue
 		}
 		for k, v := range f.Evidence {
@@ -505,6 +582,49 @@ func parseInfoLps(b []byte) modMeta {
 				m.author = v
 			}
 		}
+	}
+	return m
+}
+
+// parseInfoIni 认非 VPet 宿主的 MOD 清单（Unity/BepInEx 风格的 info.ini，形如
+//
+//	name = CFKillFeedback
+//	displayName = ...
+//	publishedFileId = 3792623130
+//
+// 只认同时带 name 与（publishedFileId | displayName | description）的，避免把随便一个
+// info.ini 当成 MOD 根。name 优先用 displayName（人看的），author 无对应字段则留空。
+func parseInfoIni(b []byte) modMeta {
+	var m modMeta
+	var name, display string
+	var hasId, hasDisplay, hasDesc bool
+	for _, ln := range strings.Split(strings.TrimPrefix(string(b), "\xef\xbb\xbf"), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(ln), "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.ToLower(strings.TrimSpace(k)), strings.TrimSpace(v)
+		switch k {
+		case "name":
+			name = v
+		case "displayname":
+			display, hasDisplay = v, v != ""
+		case "publishedfileid":
+			hasId = v != ""
+		case "description":
+			hasDesc = v != ""
+		case "author":
+			m.author = v
+		}
+	}
+	if name == "" || !(hasId || hasDisplay || hasDesc) {
+		return m
+	}
+	m.isMod = true
+	if display != "" {
+		m.name = display
+	} else {
+		m.name = name
 	}
 	return m
 }

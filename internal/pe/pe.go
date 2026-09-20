@@ -40,6 +40,11 @@ type Info struct {
 	// 加密载荷的导入目录项照常填着，但指向的内容是密文，据此区分。
 	ImportsReadable bool
 	HasCert         bool
+	// CertOffset/CertSize：Authenticode 证书表在文件中的偏移与长度（0 = 无签名）。
+	// 证书链里塞满了 crl.*/pkiops 吊销地址，做字符串提取时要整块跳过，
+	// 否则每个签名 PE 都会贡献十几条假的"外联地址"。
+	CertOffset int
+	CertSize   int
 
 	// ExportName 是导出目录里记录的"原始 DLL 名"，改文件名改不掉它。
 	ExportName string
@@ -135,6 +140,8 @@ func Parse(b []byte) (*Info, error) {
 	tail := len(b)
 	if sd := dir(dirSecurity); sd.Size > 0 {
 		info.HasCert = true
+		info.CertOffset = int(sd.VirtualAddress)
+		info.CertSize = int(sd.Size)
 		if int(sd.VirtualAddress) >= end && int(sd.VirtualAddress) < tail {
 			tail = int(sd.VirtualAddress)
 		}
@@ -292,6 +299,86 @@ func isDLLName(s string) bool {
 	}
 	l := strings.ToLower(s)
 	return strings.HasSuffix(l, ".dll") || strings.HasSuffix(l, ".drv") || strings.HasSuffix(l, ".sys") || strings.HasSuffix(l, ".exe")
+}
+
+// maxStrings / maxStrBytes：抽取上限，防止超大文件把内存和正则时间拖爆。
+// 命中已知 C2 不依赖这里（那条走原始字节扫描），这里只服务 NET-ENDPOINT / 内嵌密钥。
+const (
+	maxStrings    = 8192
+	maxStrBytes   = 4096
+	strWindowStep = maxStrBytes * 3 / 4 // 长段按窗切分，窗间重叠，避免跨窗的 URL 被截断
+)
+
+// Strings 从原始字节里抽取可打印字符串（去重，保持出现顺序，最多 maxStrings 条）。
+// 同时认 ASCII 与 UTF-16LE：Windows 原生载荷大量使用宽字符，只扫 ASCII 会漏。
+// 只读字节，不加载、不执行。
+func Strings(b []byte, minLen int) []string {
+	if minLen < 1 {
+		minLen = 1
+	}
+	out := make([]string, 0, 256)
+	seen := make(map[string]bool, 256)
+	emit := func(s string) bool {
+		if len(s) < minLen || seen[s] {
+			return false
+		}
+		seen[s] = true
+		out = append(out, s)
+		return len(out) >= maxStrings
+	}
+	// 长段按窗口切分成多条，保证任何位置的内容都完整落在某个窗口里。
+	emitRun := func(run []byte) bool {
+		for off := 0; off < len(run); off += strWindowStep {
+			end := off + maxStrBytes
+			if end > len(run) {
+				end = len(run)
+			}
+			if emit(string(run[off:end])) {
+				return true
+			}
+			if end == len(run) {
+				break
+			}
+		}
+		return false
+	}
+
+	// 1) ASCII 连续可打印段
+	start := -1
+	for i := 0; i <= len(b); i++ {
+		if i < len(b) && b[i] >= 0x20 && b[i] < 0x7f {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 {
+			if emitRun(b[start:i]) {
+				return out
+			}
+			start = -1
+		}
+	}
+
+	// 2) UTF-16LE：可打印 ASCII 字节后紧跟 0x00。允许段起始于任意奇偶位置。
+	buf := make([]byte, 0, 128)
+	for i := 0; i+1 < len(b); {
+		if b[i] >= 0x20 && b[i] < 0x7f && b[i+1] == 0 {
+			j := i
+			buf = buf[:0]
+			for j+1 < len(b) && b[j] >= 0x20 && b[j] < 0x7f && b[j+1] == 0 {
+				buf = append(buf, b[j])
+				j += 2
+			}
+			if emitRun(buf) {
+				return out
+			}
+			i = j
+			continue
+		}
+		i++
+	}
+	return out
 }
 
 func Entropy(b []byte) float64 {

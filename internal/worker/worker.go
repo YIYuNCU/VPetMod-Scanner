@@ -102,6 +102,9 @@ func DetonationTarget(rep *scan.Report) string {
 }
 
 // BootTarget 从静态报告里挑出 boot 加载器的包内路径，供动态 worker 定位引爆目标。
+// 优先级：boot 结构 > 加密载荷 > 明态载荷标记（PX-JS-INJECT / PX-ARTIFACT-MARKERS）> 无。
+// 明态载荷（如 SteamCFyinxiao.dll）没有 overlay 也没有 boot，但它是真正干活的那个文件，
+// 必须排在"随便挑一个原生 PE"之前。
 func BootTarget(rep *scan.Report) string {
 	pick := func(fs []scan.Finding) string {
 		for _, f := range fs {
@@ -111,6 +114,11 @@ func BootTarget(rep *scan.Report) string {
 		}
 		for _, f := range fs {
 			if f.Rule == "IOC-PE-BODY" || f.Rule == "PX-PAYLOAD" {
+				return f.Path
+			}
+		}
+		for _, f := range fs {
+			if f.Rule == "PX-JS-INJECT" || f.Rule == "PX-ARTIFACT-MARKERS" || f.Rule == "IOC-PE-TEXT" {
 				return f.Path
 			}
 		}

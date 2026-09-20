@@ -49,6 +49,20 @@ var Rules = []Rule{
 		"overlay 恰 108 字节、尾标记 0x68，且尾部记录的两块解密区域与自身 .rdata/.data 节的 VA/RawSize 精确对齐——boot 侧 44 字节 trailer 的载荷侧对应物，整文件改哈希也变不掉。"},
 	{"PX-JS-INJECT", Critical, "载荷代码节含浏览器注入标记",
 		"明文 .text 节里出现 __pxGate / self.__pxA 等注入脚本片段（movabs 立即数形式），指向对浏览器 / Steam 社区页的会话与登录态注入——无需解密 .rdata 即可从明文代码节直接取证。"},
+	{"PX-ARTIFACT-MARKERS", Critical, "PxBridge 注入/篡改工件标记",
+		"同一文件里命中 >=3 个家族专有标记且其中至少一个是强标记（/*px:b*/、_local_patch_backup、px_msgpoll.js、[SteamUI sp] 等，ASCII 与 UTF-16LE 两种编码都查）。**跨节扫描**：明态编译载荷把这些标记放在 .rdata，只搜 .text 会整体漏掉。"},
+	{"PX-ARTIFACT-MARKERS-WEAK", Low, "疑似 PxBridge 工件标记（弱）",
+		"命中 1~2 个家族标记，或只命中弱标记（/gate.php、api/messages、ConnectCache）。仅作检索线索，不足以定性。"},
+	// 注意：曾有一条 PX-PACKER-FPTABLE（全零 .fptable 节）。**已删除，不要加回来。**
+	// .fptable 不是打包器的占位节，而是 Universal CRT 的函数指针缓存节：
+	//   #pragma data_seg(push, almostro, ".fptable")
+	//   #pragma bss_seg (push, almostro, ".fptable")
+	//   static void* function_pointers[function_id_count];     // ucrt/internal/winapi_thunks.cpp
+	// Windows SDK >= 10.0.26100 起，任何链接 UCRT 的 PE 都会带它；因为是 bss_seg，内容全零、
+	// raw_size 一页对齐（0x200）、virt_size = 指针数 x 指针宽度（x64 32x8=0x100，x86 32x4=0x80）。
+	// 工坊 134 个 MOD 语料实测：3 个正常 MOD 的 VPetLLM.SecureCommunication.dll 命中，
+	// 并把其中一个从 clean(20) 抬到 suspicious(35) —— 典型的"看着像指纹、其实是编译器产物"。
+	// 家族组件确实也带 .fptable，但那只说明它们同样是新 SDK 编的，与家族归属无关。
 	{"PX-STUB", Critical, "PxBridge 插件加载器桩",
 		"VPet 插件 DLL 内含 PxBridge/SidecarFn/FindSidecarDll 等家族类型名，或 px-orig- 字符串。"},
 	{"PX-SIDECAR", Critical, ".px_sidecar 注入清单",
@@ -57,6 +71,8 @@ var Rules = []Rule{
 	// 单独命中不足以判可疑，要和 ORIG-WRAP / NATIVE-DIR 等叠加才升级。
 	{"GEN-STUB-NATIVE-EXEC", Medium, "插件动态执行原生代码",
 		"MainPlugin 子类同时引用 LoadLibrary + GetProcAddress + Marshal.GetDelegateForFunctionPointer：在 VPet 进程里取原生函数指针直接调用。"},
+	{"GEN-HELPER-NATIVE-EXEC", Medium, "辅助程序集按名加载原生 DLL",
+		"**非插件入口**（无 MainPlugin）的托管程序集同时引用 LoadLibrary + GetProcAddress + GetDelegateForFunctionPointer，并且把某个非自身的 *.dll 名字作为字符串常量。跨程序集的原生加载器：真正干活的 DLL 不继承 MainPlugin，原先在 MainPlugin 检查之后提前返回会整条漏掉（实测 鸭科夫样本 CalcBridge.dll）。"},
 	{"GEN-STUB-REFLECT-ORIG", High, "插件包装原插件",
 		"插件代码里硬编码 *.orig.dll 并反射加载它——原插件被挪走、由包装器转发，外观功能正常。"},
 	{"GEN-PAYLOAD-NOIMPORT", High, "导入表不可读的高熵 DLL",
@@ -109,13 +125,41 @@ var iocFileSHA256 = map[string]string{
 	// 但若被误传到审核服务须认出：内容与恶意载荷等价，不能当普通文件放行。
 	"abc60cde023e6e521033fd0b35a723a85e49a07c55cfe4ed30afec27574dea2d": "PxBridge payload decoded (assetplu8)",
 	"9c22136b37d1c28eef63f5c5ff29abdf52d24ce3505c3cfa7f1f2b813538ecb5": "PxBridge payload decoded (plugin_8b)",
+	// 鸭科夫假红信mod（SteamCFyinxiao.dll）：同一家族的**明态编译**投放物，跨游戏投放。
+	// 无 overlay 尾部、无 boot、导入表可读，结构规则只有 PX-JS-INJECT / PX-ARTIFACT-MARKERS 能命中，
+	// 所以整文件哈希必须留着兜底。
+	"a413ff6010241c8a80d098eb620c1796247f01d3f41f18042d4d52bc1b0e29d7": "PxBridge plaintext SteamUI tamper (SteamCFyinxiao.dll)",
 }
 
 // 已证实的 PxBridge C2（3803426816 载荷解密后从 .rdata 提取；原始样本中在加密节内）。
 // host 精确匹配或子域名匹配；命中即 NET-KNOWN-C2。
+// 同时用于**原始字节扫描**（ASCII + UTF-16LE）：载荷在磁盘上只存裸 host，
+// URL 是运行时用 "https://%s/..." 拼出来的，只靠 urlRe 永远匹配不到。
 var knownC2Hosts = map[string]string{
-	"bvdpp.top": "Steal JWT/凭据外传 + SteamUI 注入引导（/ey/2.php /vdf/2.php /gate.php /steamhelper*）",
+	"bvdpp.top":    "Steal JWT/凭据外传 + SteamUI 注入引导（/ey/2.php /vdf/2.php /gate.php /steamhelper*）",
+	"hhfyuxuz.top": "同族第二套 C2（跨游戏投放包 鸭科夫假红信mod/SteamCFyinxiao.dll）：/gate.php 远程开关 + /steamhelper* 页面引导；不含 /ey /vdf 窃密端点。打下 bvdpp.top 不会让这个包失效",
 }
+
+// PxBridge 注入/篡改工件的字符串标记。跨节扫描（不限 .text），ASCII 与 UTF-16LE 都查。
+//
+// 分强弱两档的理由：弱标记（/gate.php、api/messages、ConnectCache）在正常 Steam 生态里
+// 也可能出现，命中少数几条不足以定性；判定要求「>=3 个命中且至少 1 个强标记」。
+// 强标记是这套注入器的自有命名，实测在明态编译载荷里全部出现。
+var (
+	pxArtifactStrong = []string{
+		"/*px:b*/", "/*px:e*/", "_local_patch_backup", "px_msgpoll.js",
+		"[SteamUI sp]", "m_nUnviewedNotifications", "desktop_toast_default.wav", "px_mod.log",
+	}
+	pxArtifactWeak = []string{
+		"/gate.php", "/steamhelper", "api/messages", "ConnectCache",
+	}
+)
+
+// artifactMinHits / artifactMinStrong：判定 PX-ARTIFACT-MARKERS（critical）的阈值。
+const (
+	artifactMinHits   = 3
+	artifactMinStrong = 1
+)
 
 var iocBodySHA256 = map[string]string{
 	"acff7686e83fe2a537da59af2f02ddcf9aaf776cad3a17b97e228a7550e81f2c": "PxBridge boot_plain.dll",
